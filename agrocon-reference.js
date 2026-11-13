@@ -696,7 +696,411 @@
     }
   `;
   document.head.appendChild(styles);
+  /* Статьи, поиск с опечатками и компактные карточки */
+  const editedArticles = {
+    'hb-ai-florasulam': [
+      'Флорасулам — системный гербицид против двудольных сорняков. Вещество поглощается главным образом листьями, частично корнями и перемещается к точкам роста. Там оно подавляет ацетолактатсинтазу (ALS) — фермент, который участвует в синтезе валина, лейцина и изолейцина. Эти аминокислоты нужны растению для образования белков, поэтому деление клеток в растущих тканях замедляется и рост сорняка прекращается.',
+      'По внешнему виду сорняк может ещё несколько дней казаться живым и почти здоровым. При осмотре сначала обращают внимание на молодые ткани и прирост. Позднее возможны пожелтение, покраснение и отмирание точек роста. Выраженность признаков зависит от вида сорняка, его фазы и условий роста в момент обработки.',
+      'В справочнике флорасулам представлен в контексте защиты зерновых. Перечень культур и сорняков, сроки и ограничения определяют по регламенту конкретного препарата. Флорасулам относится к HRAC 2. При повторном использовании ингибиторов ALS возрастает риск отбора устойчивых сорняков. При планировании ротации учитывают код механизма действия и эффективность альтернатив против видов, которые есть в поле.'
+    ],
+    'hb-moa-2': [
+      'Ацетолактатсинтаза, или ALS (AHAS), катализирует первый общий этап синтеза трёх аминокислот: валина, лейцина и изолейцина. Когда гербицид подавляет этот фермент, запас аминокислот перестаёт нормально пополняться. Особенно чувствительны молодые ткани: в точках роста клетки активно делятся, и им постоянно нужны аминокислоты для синтеза белка.',
+      'Первое заметное следствие — остановка прироста. Уже сформированные листья некоторое время могут оставаться зелёными. По мере развития симптомов молодые ткани желтеют или краснеют, корни перестают нормально расти, точки роста отмирают. Поэтому оценка по одному признаку, например по пожелтению листьев, мало что говорит о механизме.',
+      'В HRAC 2 входят несколько химических классов. У входящих в группу веществ могут различаться чувствительные виды сорняков и культуры, на которых разрешено применение. При составлении программы защиты общий код HRAC 2 означает повторение одной и той же мишени. История применения группы важна для оценки риска устойчивости.'
+    ],
+    'disease-wheat-septoria-tritici': [
+      'Септориоз листьев пшеницы вызывает гриб Zymoseptoria tritici. Для заражения ему необходимо увлажнение листьев. После заражения болезнь обычно развивается скрыто 14–28 дней. При первых осмотрах на нижних листьях можно увидеть бледные или светло-бурые пятна. Со временем поражённая ткань отмирает, пятна вытягиваются вдоль листа и могут сливаться.',
+      'В зрелых пятнах ищут мелкие чёрные пикниды — структуры, в которых образуются споры. Для септориоза характерны многочисленные пикниды внутри отмершей ткани. При пиренофорозе чаще заметны жёлтый ореол и тёмная точка в центре пятна. Осмотр нескольких зрелых пятен даёт больше информации, чем оценка одного молодого пятна по цвету.',
+      'Заражённые остатки и падалица поддерживают инфекцию между сезонами. В посеве дождевые брызги разносят споры с нижних листьев на верхние. Продолжительная влажная погода во время формирования верхних листьев особенно опасна: их раннее отмирание уменьшает площадь фотосинтеза в период налива зерна. При оценке риска учитывают устойчивость сорта, инфекционный фон и погоду.'
+    ]
+  };
 
+  const factFields = {
+    pesticides: [
+      ['Характер действия', ['action', 'uptake', 'absorb']],
+      ['Механизм действия', ['moa', 'target']],
+      ['Культуры', ['crops']],
+      ['Химический класс', ['family']]
+    ],
+    mechanisms: [
+      ['Мишень', ['target']],
+      ['Нарушаемый процесс', ['process', 'moa']],
+      ['Химический класс', ['family']],
+      ['Культуры', ['crops']]
+    ],
+    diseases: [
+      ['Возбудитель', ['latin', 'pathogen', 'pathogenName']],
+      ['Культуры', ['crops', 'primaryCrop', 'hosts']],
+      ['Поражаемые органы', ['organs', 'affectedOrgans']],
+      ['Группа болезни', ['diseaseGroup']]
+    ]
+  };
+
+  function articleParagraphs(item) {
+    if (editedArticles[item.id]) return editedArticles[item.id];
+
+    const prose = first(item, ['description', 'simple', 'lead'])
+      .replace(/Для полевой диагностики особенно важны следующие признаки:\s*/gi, '')
+      .replace(/\s*;\.\s*/g, '. ')
+      .replace(/([.!?])\s+([а-яё])/g, (_, end, letter) =>
+        end + ' ' + letter.toLocaleUpperCase('ru'));
+
+    const segmenter = typeof Intl.Segmenter === 'function'
+      ? new Intl.Segmenter('ru', { granularity: 'sentence' })
+      : null;
+    const sentences = segmenter
+      ? Array.from(segmenter.segment(prose), entry => entry.segment.trim()).filter(Boolean)
+      : prose.split(/(?<=[.!?])\s+(?=[А-ЯЁA-Z])/).filter(Boolean);
+
+    const paragraphs = [];
+    let buffer = '';
+    for (const sentence of sentences) {
+      if (buffer.length >= 230 && buffer.length + sentence.length > 475) {
+        paragraphs.push(buffer);
+        buffer = '';
+      }
+      buffer = [buffer, sentence].filter(Boolean).join(' ');
+    }
+    if (buffer) paragraphs.push(buffer);
+
+    const supplements = detailParagraphs(item).filter(text =>
+      !/^(рабочий спектр в базе|культурный контекст)\s*:/i.test(text)
+    );
+
+    if (item.category === 'pesticides' || item.category === 'mechanisms') {
+      supplements.push(...['strength', 'limits', 'resistance'].map(key => first(item, [key])));
+    } else if (item.category === 'diseases') {
+      supplements.push(first(item, ['differentialDiagnosis']));
+      const management = list(item.managementPrinciples).map(asText).filter(Boolean);
+      if (management.length) {
+        supplements.push('При планировании защиты учитывают следующие меры: ' + management.join(', ') + '.');
+      }
+      supplements.push(first(item, ['chemicalProtection']));
+    }
+
+    const normalizeWords = value => new Set(normalize(value).split(' ').filter(word => word.length > 3));
+    let extra = '';
+
+    for (const text of supplements.filter(Boolean)) {
+      const prior = [...paragraphs, extra].join(' ');
+      const value = normalize(text);
+      if (!value || normalize(prior).includes(value)) continue;
+
+      const words = normalizeWords(text);
+      const seen = normalizeWords(prior);
+      const overlap = [...words].filter(word => seen.has(word)).length;
+      if (words.size >= 7 && overlap / words.size >= 0.85 &&
+          (text.match(/\d+/g) || []).every(number => prior.includes(number))) continue;
+
+      if (extra && extra.length + text.length > 540) {
+        paragraphs.push(extra);
+        extra = '';
+      }
+      extra = [extra, /[.!?…]$/.test(text) ? text : text + '.'].filter(Boolean).join(' ');
+    }
+    if (extra) paragraphs.push(extra);
+    return paragraphs;
+  }
+
+  const baseCard = card;
+  card = function compactCard(item) {
+    return baseCard({
+      ...item,
+      description: first(item, ['simple', 'lead', 'description']).slice(0, 220),
+      tags: []
+    });
+  };
+
+  function typoDistance(a, b) {
+    const rows = [Array.from({ length: b.length + 1 }, (_, i) => i)];
+    for (let i = 1; i <= a.length; i++) {
+      const row = [i];
+      rows.push(row);
+      for (let j = 1; j <= b.length; j++) {
+        row[j] = Math.min(
+          row[j - 1] + 1,
+          rows[i - 1][j] + 1,
+          rows[i - 1][j - 1] + Number(a[i - 1] !== b[j - 1])
+        );
+        if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+          row[j] = Math.min(row[j], rows[i - 2][j - 2] + 1);
+        }
+      }
+    }
+    return rows[a.length][b.length];
+  }
+
+  const fuzzyWords = new WeakMap();
+  function searchableWords(item) {
+    if (fuzzyWords.has(item)) return fuzzyWords.get(item);
+    const words = [...new Set(normalize([
+      title(item), item.name, item.aliases, item.latin, item.tags,
+      crops(item), item.family, item.moa, classifications(item)
+    ].map(asText).join(' ')).split(' ').filter(Boolean))];
+    fuzzyWords.set(item, words);
+    return words;
+  }
+
+  function typoLimit(word) {
+    if (!/^\p{L}{4,}$/u.test(word)) return 0;
+    return word.length < 7 ? 1 : word.length < 13 ? 2 : 3;
+  }
+
+  const baseRender = render;
+  render = function renderSearchWithTypos() {
+    const query = normalize(search.value);
+    if (!query) {
+      baseRender();
+      return;
+    }
+
+    search.closest('.arh-searchWrap')?.classList.toggle('has-value', Boolean(search.value));
+    categoryView.hidden = true;
+    globalView.hidden = false;
+
+    const terms = query.split(' ');
+    const cache = new Map();
+    const scored = [];
+
+    for (const entry of indexed) {
+      const { item, name, text } = entry;
+      const words = searchableWords(item);
+      const isExact = terms.every(term => text.includes(term));
+      const strong = terms.every(term => words.some(word =>
+        word === term || (term.length >= 3 && word.startsWith(term))
+      ));
+
+      if (isExact) {
+        scored.push({
+          item,
+          score: name === query ? 0 : name.startsWith(query) ? 1 : strong ? 2 : 7,
+          fuzzy: false
+        });
+        continue;
+      }
+
+      let cost = 0;
+      let edits = 0;
+      let matched = true;
+
+      for (const term of terms) {
+        if (words.includes(term) || (term.length >= 3 && words.some(word => word.startsWith(term)))) continue;
+
+        const limit = typoLimit(term);
+        let best = Infinity;
+        for (const word of words) {
+          if (!limit || Math.abs(word.length - term.length) > limit) continue;
+          const key = term + ':' + word;
+          if (!cache.has(key)) cache.set(key, typoDistance(term, word));
+          best = Math.min(best, cache.get(key));
+        }
+
+        if (best <= limit) {
+          edits += best;
+          cost += best / term.length;
+        } else if (text.includes(term)) {
+          cost += 0.15;
+        } else {
+          matched = false;
+          break;
+        }
+      }
+
+      if (matched && edits) scored.push({ item, score: 3 + cost, fuzzy: true });
+    }
+
+    scored.sort((a, b) => a.score - b.score || sort.compare(title(a.item), title(b.item)));
+    const direct = scored.filter(hit => !hit.fuzzy);
+    const approx = scored.filter(hit => hit.fuzzy);
+    const hasStrongMatch = direct.some(hit => hit.score < 7);
+    const similar = hasStrongMatch ? [] : approx
+      .filter(hit => hit.score <= (approx[0]?.score ?? 0) + 0.18)
+      .slice(0, 12);
+    const count = `Найдено: ${similar.length + direct.length}`;
+    setText('arhSearchCount', count);
+    setText('arhGlobalTotal', count);
+
+    const suggestions = similar.length ? `<div class="arh-querySuggestions">
+      <b>Возможно, ты имел в виду</b>
+      <div>${similar.slice(0, 4).map(({ item }) => `<button type="button"
+        data-arh-suggestion="${escape(item.id)}">${escape(title(item))}</button>`).join('')}</div>
+    </div>` : '';
+
+    const groups = [
+      ...(similar.length ? [['Похожие результаты', similar.map(hit => hit.item)]] : []),
+      ...groupBy(direct.map(hit => hit.item), item => categoryMeta(item.category)[0])
+    ];
+    globalResults.innerHTML = groups.length
+      ? suggestions + groupsHtml(groups)
+      : empty('По этому запросу ничего не найдено');
+  };
+
+  globalResults.addEventListener('click', event => {
+    const button = event.target.closest('[data-arh-suggestion]');
+    if (!button) return;
+    const item = itemById.get(button.dataset.arhSuggestion);
+    if (!item) return;
+    search.value = title(item);
+    render();
+    setItemHash(String(item.id));
+  });
+
+  const baseOpenDetail = openDetail;
+  openDetail = function openArticle(item) {
+    let savedMode;
+    try { savedMode = localStorage.getItem(historyKey); } catch (_) {}
+
+    baseOpenDetail(item);
+
+    const box = document.querySelector('#arhDetailPortal .arh-modal');
+    if (!box) return;
+    const top = box.querySelector('.arh-modalTop');
+    const heading = top?.firstElementChild;
+    const brief = box.querySelector('#arhBrief');
+    const full = box.querySelector('#arhFull');
+    if (!heading || !brief || !full) return;
+
+    const identity = {
+      pesticides: 'Действующее вещество',
+      mechanisms: 'Механизм действия',
+      diseases: 'Болезнь',
+      pests: 'Вредитель',
+      weeds: 'Сорное растение',
+      crops: 'Культура',
+      nutrition: 'Питание растений'
+    }[item.category] || categoryMeta(item.category)[0];
+
+    const label = document.createElement('div');
+    label.className = 'arh-articleKind';
+    label.textContent = identity;
+    heading.prepend(label);
+    heading.querySelector('.arh-modalLead')?.remove();
+
+    const titleElement = heading.querySelector('.arh-modalName');
+    if (titleElement) heading.insertBefore(titleElement, heading.querySelector('.arh-modalBadges'));
+
+    const facts = factFields[item.category]
+      ? factFields[item.category].map(([name, keys]) => [name, first(item, keys)]).filter(([, text]) => text)
+      : detailFields(item).slice(0, 4);
+
+    if (facts.length) {
+      const summary = document.createElement('dl');
+      summary.className = 'arh-articleFacts';
+      summary.innerHTML = facts.map(([name, value]) =>
+        `<div><dt>${escape(name)}</dt><dd>${escape(value)}</dd></div>`).join('');
+      top.insertBefore(summary, top.querySelector('.arh-modalClose'));
+    }
+
+    const paragraphs = articleParagraphs(item);
+    const intro = first(item, ['simple', 'lead']) || paragraphs[0] || 'Краткое описание пока не добавлено.';
+    const takeaway = first(item, ['remember', 'takeaway']);
+    brief.innerHTML = `<article class="arh-reading">
+      <p>${escape(intro)}</p>
+      ${takeaway && normalize(takeaway) !== normalize(intro) ? `<p>${escape(takeaway)}</p>` : ''}
+    </article>`;
+
+    const related = full.querySelector('.arh-relatedArticle');
+    const content = paragraphs.length ? paragraphs : [intro];
+    const details = !factFields[item.category]
+      ? detailFields(item).slice(4).map(([name, value]) =>
+        `<p><strong>${escape(name)}.</strong> ${escape(value)}</p>`).join('')
+      : '';
+
+    full.innerHTML = `<article class="arh-reading">
+      ${content.map(text => `<p>${escape(text)}</p>`).join('')}${details}
+    </article>`;
+
+    if (related) full.appendChild(related);
+
+    const basis = first(item, ['resistanceRiskBasis']);
+    if (basis) {
+      full.insertAdjacentHTML('beforeend',
+        `<p class="arh-riskBasis"><strong>Основание оценки риска.</strong> ${escape(basis)}</p>`);
+    }
+
+    setMode(box, savedMode === 'brief' ? 'brief' : 'full');
+  };
+
+  const editorialStyles = document.createElement('style');
+  editorialStyles.textContent = `
+    #agro-reference-home .arh-card {
+      min-height:0; padding:12px 14px; border-radius:15px;
+    }
+    #agro-reference-home .arh-cardTitle { margin-top:8px; font-size:17px; }
+    #agro-reference-home .arh-cardDesc {
+      display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2;
+      overflow:hidden; margin-top:5px; font-size:12px; line-height:1.4;
+    }
+    #agro-reference-home .arh-alphaGroup + .arh-alphaGroup { margin-top:22px; }
+    #agro-reference-home .arh-alphaLetter {
+      white-space:normal; overflow-wrap:anywhere; max-width:72%;
+    }
+    #agro-reference-home .arh-querySuggestions {
+      padding:12px 14px; margin-bottom:18px; border-radius:14px; background:#fff4e8;
+    }
+    #agro-reference-home .arh-querySuggestions div {
+      display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;
+    }
+    #agro-reference-home .arh-querySuggestions button {
+      border:1px solid #f0d1af; border-radius:10px;
+      background:#fff; color:#804600; padding:5px 9px;
+    }
+    #arhDetailPortal .arh-modal {
+      width:min(1120px,100%); max-height:min(92vh,960px);
+      overflow-y:auto; overflow-x:hidden; padding:28px 32px;
+      scrollbar-width:thin; scrollbar-color:#d3c4b6 #fff; scrollbar-gutter:stable;
+    }
+    #arhDetailPortal .arh-modalTop {
+      display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.18fr) auto;
+      gap:20px; align-items:start; padding-bottom:22px; border-bottom:1px solid #e5e8e3;
+    }
+    #arhDetailPortal .arh-articleKind {
+      font-size:11px; font-weight:850; text-transform:uppercase;
+      letter-spacing:.09em; color:#a6530b;
+    }
+    #arhDetailPortal .arh-modalName { margin:8px 0 14px; line-height:1.1; }
+    #arhDetailPortal .arh-articleFacts {
+      grid-column:2; display:grid; grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:10px 18px; margin:0; padding:14px 16px;
+      border-radius:15px; background:#f5f6f2;
+    }
+    #arhDetailPortal .arh-articleFacts dt {
+      font-size:10px; font-weight:800; color:#606760;
+    }
+    #arhDetailPortal .arh-articleFacts dd {
+      margin:3px 0 0; font-size:13px; line-height:1.45; overflow-wrap:anywhere;
+    }
+    #arhDetailPortal .arh-modalClose { grid-column:3; width:42px; }
+    #arhDetailPortal .arh-viewSwitch {
+      border-bottom:1px solid #e5e8e3; gap:16px; margin:14px 0 0;
+    }
+    #arhDetailPortal .arh-viewSwitch button { min-height:40px; }
+    #arhDetailPortal .arh-reading {
+      max-width:78ch; margin:20px 0 0; font-size:16px; line-height:1.7;
+    }
+    #arhDetailPortal .arh-reading p {
+      margin:0 0 14px; white-space:pre-line; overflow-wrap:anywhere;
+    }
+    #arhDetailPortal .arh-riskBasis {
+      max-width:78ch; color:#626962; font-size:13px; line-height:1.55;
+    }
+    @media(max-width:720px) {
+      #arhDetailPortal .arh-modal {
+        max-height:94vh; max-height:94dvh;
+        padding:16px 15px calc(18px + env(safe-area-inset-bottom));
+      }
+      #arhDetailPortal .arh-modalTop {
+        grid-template-columns:minmax(0,1fr) auto; gap:10px; padding-bottom:14px;
+      }
+      #arhDetailPortal .arh-articleFacts {
+        grid-column:1/-1; grid-row:2; gap:8px 12px; padding:10px;
+      }
+      #arhDetailPortal .arh-modalClose { grid-column:2; grid-row:1; }
+      #arhDetailPortal .arh-reading { font-size:15px; }
+    }
+  `;
+  document.head.appendChild(editorialStyles);
+  
   search.addEventListener('input', render);
   clear.addEventListener('click', () => {
     search.value = '';
