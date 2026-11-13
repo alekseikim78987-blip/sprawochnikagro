@@ -1100,7 +1100,350 @@
     }
   `;
   document.head.appendChild(editorialStyles);
-  
+
+    /* Справочник: чтение и поиск v2 */
+  function searchTerms(value) {
+    return normalize(value).split(' ').filter(Boolean);
+  }
+
+  function candidateForms(word) {
+    const english = 'qwertyuiopasdfghjklzxcvbnm';
+    const russian = 'йцукенгшщзфывапролдячсмить';
+    const forms = [word];
+    const from = /^[a-z]+$/.test(word) ? english
+      : /^[а-я]+$/.test(word) ? russian : '';
+
+    if (from && word.length >= 4) {
+      const to = from === english ? russian : english;
+      forms.push([...word].map(letter => to[from.indexOf(letter)] || letter).join(''));
+    }
+    return forms;
+  }
+
+  const keyIndex = new WeakMap();
+
+  function searchKeys(item) {
+    if (!keyIndex.has(item)) {
+      const names = [title(item), item.name, ...list(item.aliases), item.latin];
+      const context = [crops(item), item.organs, item.moa, item.family, classifications(item)];
+
+      keyIndex.set(item, {
+        names: new Set(names.flatMap(value => searchTerms(asText(value)))),
+        words: new Set([...names, ...context].flatMap(value => searchTerms(asText(value))))
+      });
+    }
+    return keyIndex.get(item);
+  }
+
+  function rankWord(word, keys, distance) {
+    const { names, words } = keys;
+    if (names.has(word)) return [0, false];
+    if (words.has(word)) return [0.12, false];
+
+    if (/^\p{L}{3,}$/u.test(word)) {
+      for (const name of names) {
+        if (name.startsWith(word)) return [0.2, false];
+      }
+    }
+
+    const forms = candidateForms(word);
+    const limit = /^\p{L}{4,40}$/u.test(word)
+      ? (word.length < 7 ? 1 : word.length < 12 ? 2 : 3) : 0;
+    let best = Infinity;
+
+    for (const target of words) {
+      const penalty = names.has(target) ? 0 : 0.25;
+      for (const form of forms) {
+        if (form !== word && form === target) best = Math.min(best, 0.35 + penalty);
+        if (!limit || !/^\p{L}+$/u.test(target) ||
+            Math.abs(form.length - target.length) > limit) continue;
+
+        const edits = distance(form, target);
+        if (edits <= limit) best = Math.min(best, 0.4 + edits / word.length + penalty);
+      }
+    }
+    return [best, Number.isFinite(best)];
+  }
+
+  render = function renderCatalog() {
+    const query = normalize(search.value);
+    if (!query) {
+      baseRender();
+      return;
+    }
+
+    search.closest('.arh-searchWrap')?.classList.add('has-value');
+    categoryView.hidden = true;
+    globalView.hidden = false;
+
+    const terms = [...new Set(searchTerms(query))].slice(0, 12);
+    const measured = new Map();
+    const distance = (a, b) => {
+      const key = a + ':' + b;
+      if (!measured.has(key)) measured.set(key, typoDistance(a, b));
+      return measured.get(key);
+    };
+
+    const precise = [];
+    const corrected = [];
+    const inText = [];
+
+    for (const entry of indexed) {
+      const item = entry.item;
+      if (entry.name === query) {
+        precise.push({ item, score: -1 });
+        continue;
+      }
+
+      const ranks = terms.map(word => rankWord(word, searchKeys(item), distance));
+      const score = ranks.reduce((sum, [value]) => sum + value, 0);
+      if (Number.isFinite(score)) {
+        const bucket = ranks.some(([, typo]) => typo) ? corrected : precise;
+        bucket.push({ item, score });
+      } else if (terms.every(word => word.length < 3 || /\d/.test(word)
+        ? searchTerms(entry.text).includes(word) : entry.text.includes(word))) {
+        inText.push({ item, score: 0 });
+      }
+    }
+
+    const byRelevance = (a, b) =>
+      a.score - b.score || sort.compare(title(a.item), title(b.item));
+    precise.sort(byRelevance);
+    corrected.sort(byRelevance);
+
+    const alternatives = precise.some(hit => hit.score <= 0.12)
+      ? []
+      : corrected.filter(hit => hit.score <= (corrected[0]?.score ?? 0) + 0.3).slice(0, 10);
+
+    const count = `Найдено: ${precise.length + alternatives.length + inText.length}`;
+    setText('arhSearchCount', count);
+    setText('arhGlobalTotal', count);
+
+    const hints = [...new Map(alternatives.map(({ item }) => [title(item), item])).values()].slice(0, 4);
+    const suggestions = hints.length ? `<div class="arh-querySuggestions">
+      <b>Возможно, вы имели в виду</b>
+      <div>${hints.map(item => `<button type="button"
+        data-arh-suggestion="${escape(item.id)}">${escape(title(item))}</button>`).join('')}</div>
+    </div>` : '';
+
+    const groups = new Map();
+    if (precise.length) groups.set('Совпадения', precise.map(hit => hit.item));
+    if (alternatives.length) groups.set('Похожие результаты', alternatives.map(hit => hit.item));
+    if (inText.length) groups.set('Упоминания в описаниях', inText.map(hit => hit.item));
+
+    globalResults.innerHTML = groups.size
+      ? suggestions + groupsHtml(groups)
+      : empty('По этому запросу ничего не найдено');
+  };
+
+  Object.assign(editedArticles, {
+    'hb-ai-glyphosate': [
+      'Глифосат попадает в растение через зелёные листья. По проводящим тканям он перемещается туда, куда растение направляет продукты фотосинтеза, в том числе к точкам роста и подземным органам. Это объясняет, почему системное действие важно при работе с многолетними сорняками: повреждение может развиваться и в частях растения, на которые раствор не попадал.',
+      'В клетке глифосат блокирует EPSPS. Этот фермент нужен для работы шикиматного пути, по которому растение образует фенилаланин, тирозин и триптофан. Нарушение этого пути тормозит рост. Видимые изменения обычно появляются постепенно: листья желтеют, затем ткани отмирают. По скорости пожелтения нельзя уверенно судить, сколько вещества дошло до подземных органов.',
+      'Глифосат относится к HRAC 9 и действует на чувствительные злаковые и двудольные растения, включая обычные культурные растения при попадании на них. Устойчивые популяции сорняков известны. Разрешённые условия применения зависят от регистрации конкретного препарата.'
+    ],
+    'fg-ai-001': [
+      'Чтобы заразить растение, споре гриба нужно прорасти и сформировать структуры, с помощью которых она прикрепляется или проникает в ткань. На этих стадиях ей требуется энергия. Азоксистробин нарушает её получение: он блокирует Qo-участок комплекса III в митохондриях. Передача электронов замедляется, и клетка образует меньше АТФ.',
+      'Отсюда и сильная сторона азоксистробина: подавление прорастания спор и ранних стадий заражения. Когда на листе уже видны развитые пятна, инфекция началась раньше. Для оценки защиты важнее, появляются ли новые поражения и как меняется ситуация в посеве.',
+      'Азоксистробин относится к FRAC 11. Изменения белка мишени, в том числе G143A у некоторых грибов, могут снижать чувствительность к нему и другим веществам той же группы. При чередовании механизмов ориентируются на код FRAC.'
+    ],
+    'disease-wheat-tan-spot': [
+      'Пиренофороз пшеницы вызывает Pyrenophora tritici-repentis. Гриб сохраняется на заражённых остатках пшеницы. Во влажную погоду они становятся источником инфекции для нового посева. По мере развития болезни мелкие бурые пятна на листьях разрастаются, становятся овальными или ромбовидными и могут сливаться.',
+      'Для осмотра лучше взять несколько листьев с пятнами разного возраста. У типичного пятна заметна небольшая тёмная точка в центре, а вокруг бурой отмершей ткани у восприимчивых сортов виден жёлтый ореол. При септориозе внутри зрелого пятна чаще видны многочисленные мелкие чёрные пикниды. Отдельное молодое пятно без характерных признаков недостаточно для уверенного диагноза.',
+      'Вред зависит от того, какие листья поражены и когда. Если болезнь успевает перейти на верхние листья, их отмирание сокращает площадь фотосинтеза во время налива зерна. При оценке риска учитывают количество поражённых остатков, восприимчивость сорта и продолжительность увлажнения листьев.'
+    ]
+  });
+
+  const handEditedBriefs = {
+    'hb-ai-florasulam': [
+      'Флорасулам — системный гербицид против двудольных сорняков в зерновых. Он поступает преимущественно через листья и перемещается к точкам роста, где блокирует фермент ALS. Без нормального синтеза валина, лейцина и изолейцина молодые клетки перестают делиться. Поэтому первые признаки действия ищут по отсутствию прироста. Пожелтение и отмирание тканей появляются позже.',
+      'Флорасулам относится к HRAC 2. При составлении схемы защиты имеет значение, какие механизмы уже использовали на поле и против каких сорняков они были эффективны.'
+    ],
+    'hb-moa-2': [
+      'ALS — фермент, с работы которого начинается общий путь синтеза трёх аминокислот: валина, лейцина и изолейцина. Ингибиторы ALS перекрывают этот путь. Молодые клетки теряют возможность нормально синтезировать белки и делиться, поэтому сорняк сначала прекращает расти. Уже сформированные листья могут некоторое время оставаться зелёными.',
+      'Одинаковый код HRAC 2 у двух веществ означает общую мишень. Спектр действия при этом может различаться. Переход с одного вещества HRAC 2 на другое сохраняет давление отбора на ту же мишень.'
+    ],
+    'disease-wheat-septoria-tritici': [
+      'Септориоз листьев пшеницы удобнее всего распознавать по зрелым пятнам. Внутри серо-бурой отмершей ткани ищут многочисленные мелкие чёрные пикниды. Молодые светлые пятна без пикнид легко спутать с другими пятнистостями.',
+      'Дождевые брызги разносят споры с нижних листьев на верхние. Продолжительное увлажнение особенно опасно во время формирования верхних листьев: поражение сокращает площадь фотосинтеза и мешает наливу зерна.'
+    ]
+  };
+
+  function readable(value) {
+    return value
+      .replace(/Для полевой диагностики особенно важны следующие признаки:\s*/gi, '')
+      .replace(/Наиболее внимательно посев следует осматривать в период:\s*/gi, 'Период наблюдения: ')
+      .replace(/при сильном развитии болезнь приводит к следующему:\s*/gi, 'Последствия сильного поражения: ')
+      .replace(/\s*;\.\s*/g, '. ')
+      .replace(/Эти признаки являются следствием нарушения основной мишени и помогают отличать механизм от быстрого контактного повреждения или неспецифического стресса\./gi, '')
+      .replace(/([.!?])\s+([а-яё])/g, (_, end, letter) => end + ' ' + letter.toUpperCase())
+      .trim();
+  }
+
+  function firstSentences(text, minLength) {
+    if (!text) return '';
+
+    const sentences = typeof Intl.Segmenter === 'function'
+      ? [...new Intl.Segmenter('ru', { granularity: 'sentence' }).segment(text)]
+        .map(entry => entry.segment.trim())
+      : text.split(/(?<=[.!?])\s+(?=[А-ЯЁA-Z])/);
+
+    let result = '';
+    for (const sentence of sentences) {
+      result = [result, sentence].filter(Boolean).join(' ');
+      if (result.length >= minLength) break;
+    }
+    return result;
+  }
+
+  function briefArticle(item) {
+    if (handEditedBriefs[item.id]) return handEditedBriefs[item.id];
+    if (!factFields[item.category]) return [];
+
+    const body = readable(editedArticles[item.id]?.[0] ||
+      first(item, ['description', 'simple', 'lead']));
+    const intro = firstSentences(body, 275);
+    const field = item.category === 'diseases'
+      ? first(item, ['diagnosticSigns', 'favorableConditions'])
+      : first(item, ['symptoms', 'resistance', 'strength']);
+    const detail = readable(field);
+    const chain = item.category === 'mechanisms' ? first(item, ['chain']) : '';
+    const extra = detail && !normalize(intro).includes(normalize(detail))
+      ? (/\p{L}$/u.test(detail) ? detail + '.' : detail)
+      : '';
+
+    return [intro, chain || extra].filter(Boolean);
+  }
+
+  const previousArticleView = openDetail;
+  openDetail = function openReadingView(item) {
+    previousArticleView(item);
+
+    const modal = document.querySelector('#arhDetailPortal .arh-modal');
+    if (!modal) return;
+
+    const short = briefArticle(item);
+    const brief = modal.querySelector('#arhBrief');
+    if (brief && short.length) {
+      brief.innerHTML = `<article class="arh-reading">
+        ${short.map(paragraph => `<p>${escape(paragraph)}</p>`).join('')}
+      </article>`;
+    }
+
+    const full = modal.querySelector('#arhFull .arh-reading');
+    if (!full || !factFields[item.category]) return;
+
+    const paragraphs = articleParagraphs(item).map(readable).filter(Boolean);
+    if (!paragraphs.length) return;
+
+    const chain = item.category === 'mechanisms' ? first(item, ['chain']) : '';
+    full.innerHTML = paragraphs.map(text => `<p>${escape(text)}</p>`).join('');
+
+    if (chain && !normalize(paragraphs.join(' ')).includes(normalize(chain))) {
+      full.insertAdjacentHTML('afterbegin',
+        `<p class="arh-mechanismChain"><strong>Цепочка действия</strong><br>${escape(chain)}</p>`);
+    }
+  };
+
+  card = function catalogPreview(item) {
+    return baseCard({
+      ...item,
+      description: firstSentences(readable(first(item, ['description', 'simple', 'lead'])), 165),
+      tags: []
+    });
+  };
+
+  const readingStyles = document.createElement('style');
+  readingStyles.textContent = `
+    #agro-reference-home .arh-card { padding:13px 15px; }
+    #agro-reference-home .arh-cardDesc {
+      -webkit-line-clamp:3; font-size:13px; line-height:1.45;
+    }
+    #agro-reference-home .arh-querySuggestions { background:#f1f2f0; }
+    #agro-reference-home .arh-querySuggestions button {
+      color:#363b37; border-color:#d7d9d5;
+    }
+
+    #arhDetailPortal .arh-modal {
+      width:min(1600px,calc(100vw - 40px)); max-width:1600px; min-width:0;
+      padding:30px clamp(20px,3vw,52px);
+      max-height:92vh; max-height:92dvh;
+      overflow-x:hidden; overflow-y:auto;
+      scrollbar-width:thin; scrollbar-color:#989d99 #f1f2f0;
+      scrollbar-gutter:stable;
+    }
+    #arhDetailPortal .arh-modal::-webkit-scrollbar { width:9px; }
+    #arhDetailPortal .arh-modal::-webkit-scrollbar-track {
+      background:#f1f2f0; margin-block:18px; border-radius:8px;
+    }
+    #arhDetailPortal .arh-modal::-webkit-scrollbar-thumb {
+      background:#989d99; border:2px solid #f1f2f0; border-radius:8px;
+    }
+    #arhDetailPortal .arh-modalTop {
+      grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) auto;
+      gap:clamp(12px,2vw,34px); align-items:start;
+    }
+    #arhDetailPortal .arh-articleFacts {
+      display:block; padding:0; background:transparent;
+    }
+    #arhDetailPortal .arh-articleFacts > div {
+      display:grid; grid-template-columns:minmax(112px,1fr) minmax(0,2fr);
+      gap:12px; padding:8px 0; border-bottom:1px solid #e8eae7;
+    }
+    #arhDetailPortal .arh-articleFacts > div:last-child { border-bottom:0; }
+    #arhDetailPortal .arh-articleFacts dt,
+    #arhDetailPortal .arh-articleFacts dd {
+      margin:0; font-size:14px; line-height:1.45;
+    }
+    #arhDetailPortal .arh-viewSwitch {
+      display:flex; flex-wrap:wrap; gap:6px; max-width:100%; min-width:0;
+      width:fit-content; padding:4px; margin:18px 0 0;
+      border:1px solid #e4e6e3; border-radius:12px;
+      background:#f1f2f0; overflow:visible;
+    }
+    #arhDetailPortal .arh-viewSwitch button,
+    #arhDetailPortal .arh-viewSwitch [data-detail-mode="similar"] {
+      max-width:100%; padding:7px 12px; min-height:36px;
+      white-space:normal; overflow-wrap:anywhere;
+      border:1px solid transparent; border-radius:8px;
+      background:transparent; color:#505651; box-shadow:none;
+    }
+    #arhDetailPortal .arh-viewSwitch button.active,
+    #arhDetailPortal .arh-viewSwitch [data-detail-mode="similar"].active {
+      border-color:#d9dcd8; color:#212722; background:#fff;
+    }
+    #arhDetailPortal .arh-reading,
+    #arhDetailPortal .arh-mechanismChain { max-width:82ch; }
+    #arhDetailPortal .arh-reading .arh-mechanismChain {
+      margin:0 0 18px; padding:10px 14px; border-left:3px solid #a4a9a4;
+      background:#f5f6f4; line-height:1.55;
+    }
+
+    @media (max-width:720px) {
+      #arhDetailPortal { padding:0; align-items:flex-end; }
+      #arhDetailPortal .arh-modal {
+        width:100%; max-width:100%; max-height:95vh; max-height:95dvh;
+        padding:16px 14px calc(18px + env(safe-area-inset-bottom));
+        border-radius:22px 22px 0 0;
+      }
+      #arhDetailPortal .arh-modalTop {
+        grid-template-columns:minmax(0,1fr) auto; gap:10px;
+      }
+      #arhDetailPortal .arh-articleFacts { grid-column:1/-1; grid-row:2; }
+      #arhDetailPortal .arh-modalClose { grid-column:2; grid-row:1; }
+      #arhDetailPortal .arh-articleFacts > div {
+        grid-template-columns:minmax(92px,1fr) minmax(0,1.65fr); gap:9px;
+      }
+      #arhDetailPortal .arh-articleFacts dt,
+      #arhDetailPortal .arh-articleFacts dd { font-size:13px; }
+      #arhDetailPortal .arh-viewSwitch button,
+      #arhDetailPortal .arh-viewSwitch [data-detail-mode="similar"] {
+        padding:6px 8px;
+      }
+      #arhDetailPortal .arh-reading { font-size:15px; }
+    }
+  `;
+  document.head.appendChild(readingStyles);
   search.addEventListener('input', render);
   clear.addEventListener('click', () => {
     search.value = '';
